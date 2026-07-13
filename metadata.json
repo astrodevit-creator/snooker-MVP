@@ -1,0 +1,6 @@
+{
+  "name": "Snooker Club Manager",
+  "description": "An MVP for a Snooker Club management app. It features admin vs user dashboards, role-based permissions, per-second billing, daily summaries, and an admin-only printable PDF résumé.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
