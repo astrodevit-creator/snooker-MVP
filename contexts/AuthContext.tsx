@@ -1,10 +1,10 @@
 
 import React, { createContext, useState, ReactNode } from 'react';
 import { User } from '../types';
-import { useUsers } from '../hooks/useUsers';
+import { supabase, formatError } from '../lib/supabase';
 
 interface AuthContextType {
-  user: Omit<User, 'password'> | null;
+  user: User | null;
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
 }
@@ -12,20 +12,32 @@ interface AuthContextType {
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<Omit<User, 'password'> | null>(null);
-  const { findUserByEmail } = useUsers();
+  const [user, setUser] = useState<User | null>(null);
 
   const login = async (email: string, password: string): Promise<void> => {
-    const foundUser = findUserByEmail(email);
+    // Credentials are verified server-side via a SECURITY DEFINER function so the
+    // client never fetches password hashes directly (see verify_login in the Supabase SQL script).
+    const { data, error } = await supabase.rpc('verify_login', {
+      p_email: email,
+      p_password: password,
+    });
 
-    if (foundUser && foundUser.password === password) {
-      // For security, don't store the password in the session user object
-      const { password: _, ...userToStore } = foundUser;
-      setUser(userToStore);
-      return Promise.resolve();
-    } else {
-      return Promise.reject(new Error('Invalid email or password.'));
+    if (error) {
+      throw new Error(formatError(error));
     }
+
+    const foundUser = Array.isArray(data) ? data[0] : data;
+    if (!foundUser) {
+      throw new Error('Invalid email or password.');
+    }
+
+    const userToStore: User = {
+      id: foundUser.id,
+      email: foundUser.email,
+      role: foundUser.role,
+      allowedTables: foundUser.allowedTables ?? null,
+    };
+    setUser(userToStore);
   };
 
   const logout = () => {

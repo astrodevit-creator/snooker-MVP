@@ -6,10 +6,13 @@ import { GameProvider } from './contexts/GameContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { UserProvider } from './contexts/UserContext';
 import { BusinessDayProvider } from './contexts/BusinessDayContext';
+import { TableProvider } from './contexts/TableContext';
 import { useAuth } from './hooks/useAuth';
 import { useGames } from './hooks/useGames';
 import { useUsers } from './hooks/useUsers';
 import { useBusinessDay } from './hooks/useBusinessDay';
+import { useTables } from './hooks/useTables';
+import { getSupabaseConfig } from './lib/supabase';
 import AuthPage from './pages/AuthPage';
 import DashboardPage from './pages/DashboardPage';
 import AdminPage from './pages/AdminPage';
@@ -24,19 +27,32 @@ const SetupWarning: React.FC = () => {
     const { isTableMissing: gamesMissing, refetchGames, isLoading, error } = useGames();
     const { isTableMissing: usersMissing } = useUsers();
     const { isTableMissing: configMissing } = useBusinessDay();
-    
-    const isAnyTableMissing = gamesMissing || usersMissing || configMissing;
-    
+    const { isTableMissing: tablesMissing } = useTables();
+    const { isConfigured } = getSupabaseConfig();
+
+    const isAnyTableMissing = gamesMissing || usersMissing || configMissing || tablesMissing;
+
+    if (!isConfigured) {
+        return (
+            <div className="bg-destructive text-destructive-foreground px-4 py-3 text-center text-sm font-bold flex flex-col gap-2 justify-center shadow-lg z-[60] relative">
+                <div className="flex items-center justify-center gap-2">
+                    <AlertTriangle className="h-5 w-5 shrink-0" />
+                    <span>Supabase n'est pas configuré. Ouvrez les Paramètres pour saisir votre URL et clé anonyme.</span>
+                </div>
+            </div>
+        );
+    }
+
     if (!isAnyTableMissing && !error) return null;
-    
+
     return (
         <div className="bg-destructive text-destructive-foreground px-4 py-3 text-center text-sm font-bold flex flex-col gap-2 justify-center shadow-lg z-[60] relative">
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
                 <div className="flex items-center gap-2">
                     <AlertTriangle className="h-5 w-5 shrink-0" />
                     <span>
-                        {isAnyTableMissing 
-                            ? "Database Tables Not Found! Did you run the SQL script in Supabase?" 
+                        {isAnyTableMissing
+                            ? "Database Tables Not Found! Did you run the SQL script in Supabase?"
                             : "Supabase Database Connection Issue Detected!"}
                     </span>
                 </div>
@@ -118,15 +134,17 @@ const App: React.FC = () => {
   return (
     <UserProvider>
       <AuthProvider>
-        <GameProvider>
-          <ThemeProvider>
-            <BusinessDayProvider>
-              <HashRouter>
-                <AppRoutes/>
-              </HashRouter>
-            </BusinessDayProvider>
-          </ThemeProvider>
-        </GameProvider>
+        <TableProvider>
+          <GameProvider>
+            <ThemeProvider>
+              <BusinessDayProvider>
+                <HashRouter>
+                  <AppRoutes/>
+                </HashRouter>
+              </BusinessDayProvider>
+            </ThemeProvider>
+          </GameProvider>
+        </TableProvider>
       </AuthProvider>
     </UserProvider>
   );

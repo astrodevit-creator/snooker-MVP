@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { Game, PaymentStatus } from '../types';
-import { formatCurrency, formatDuration } from '../lib/utils';
+import { formatCurrency, formatDuration, getLoserName } from '../lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/Card';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
@@ -41,10 +41,7 @@ const DailyClosureReport: React.FC<DailyClosureReportProps> = ({ date, endDate, 
 
   const getDebtor = (game: Game) => {
     if (game.paymentStatus !== PaymentStatus.LOAN) return '-';
-    if (!game.player2) return game.player1;
-    if (game.winner === game.player1) return game.player2;
-    if (game.winner === game.player2) return game.player1;
-    return game.player1;
+    return getLoserName(game);
   };
 
   const isRange = endDate && endDate !== date;
@@ -110,6 +107,7 @@ const DailyClosureReport: React.FC<DailyClosureReportProps> = ({ date, endDate, 
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-zinc-100 dark:bg-zinc-900 text-zinc-500 text-[10px] uppercase font-black">
+                    <th className="p-3 text-left">#</th>
                     <th className="p-3 text-left">Date</th>
                     <th className="p-3 text-left">Table</th>
                     <th className="p-3 text-left">Joueurs</th>
@@ -121,6 +119,9 @@ const DailyClosureReport: React.FC<DailyClosureReportProps> = ({ date, endDate, 
                 <tbody className="divide-y divide-dashed">
                   {games.map((game) => (
                     <tr key={game.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900/50">
+                      <td className="p-3 whitespace-nowrap text-[10px] font-black text-zinc-400">
+                        {game.dayNumber != null ? `#${game.dayNumber}` : '-'}
+                      </td>
                       <td className="p-3 whitespace-nowrap text-[10px] font-black text-zinc-400">
                         {new Date(game.date + 'T00:00:00').toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}
                       </td>

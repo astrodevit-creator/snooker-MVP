@@ -3,16 +3,16 @@ import React, { useState, useMemo } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { useGames } from '../hooks/useGames';
 import { useBusinessDay } from '../hooks/useBusinessDay';
+import { useTables } from '../hooks/useTables';
 import GamesTable from '../components/GamesTable';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Select } from '../components/ui/Select';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
-import { TABLES, DEFAULT_HOURLY_RATE } from '../constants';
 import { GameStatus, PaymentStatus, Game } from '../types';
 import { AlertTriangle, ClockIcon, CheckCircle, UsersIcon, DollarSignIcon } from '../components/icons';
 import { Badge } from '../components/ui/Badge';
-import { formatCurrency } from '../lib/utils';
+import { formatCurrency, getLoserName } from '../lib/utils';
 import { AIAuditorWidget } from '../components/AIAuditorWidget';
 import KpiCard from '../components/KpiCard';
 
@@ -20,6 +20,7 @@ const DashboardPage: React.FC = () => {
   const { user } = useAuth();
   const { games, addGame, updateGame, isTableMissing } = useGames();
   const { businessDate } = useBusinessDay();
+  const { tables } = useTables();
   const [player1, setPlayer1] = useState('');
   const [player2, setPlayer2] = useState('');
   const [selectedTableId, setSelectedTableId] = useState('');
@@ -42,26 +43,33 @@ const DashboardPage: React.FC = () => {
       return;
     }
 
-    const tableConfig = TABLES.find(t => t.id === selectedTableId);
-    const tableName = tableConfig ? tableConfig.name : 'Inconnue';
-    const hourlyRate = tableConfig ? tableConfig.rate : DEFAULT_HOURLY_RATE;
-    
+    const tableConfig = tables.find(t => t.id === selectedTableId);
+    if (!tableConfig) {
+      alert('Table introuvable.');
+      return;
+    }
+    const tableName = tableConfig.name;
+
     const isTableBusy = games.some(g => g.tableName === tableName && g.status === GameStatus.RUNNING);
-    
+
     if (isTableBusy) {
       alert(`La table "${tableName}" est déjà occupée.`);
       return;
     }
-    
+
     addGame({
       date: businessDate,
+      dayNumber: null,
       tableName: tableName,
-      hourlyRate: hourlyRate,
+      tableType: tableConfig.type,
+      hourlyRate: tableConfig.hourlyRate,
+      ratePerGame: tableConfig.ratePerGame,
       startTime: new Date().toISOString(),
       endTime: null,
       player1,
       player2: player2 || null,
       winner: null,
+      loserName: null,
       status: GameStatus.RUNNING,
       durationSeconds: null,
       priceMAD: null,
@@ -79,22 +87,15 @@ const DashboardPage: React.FC = () => {
     setGamesCount('1');
   };
 
-  const getDebtorName = (loan: Game) => {
-    if (!loan.player2) return loan.player1;
-    if (loan.winner === loan.player1) return loan.player2;
-    if (loan.winner === loan.player2) return loan.player1;
-    return loan.player1;
-  };
-  
   const allowedTablesList = useMemo(() => {
-    if (!user) return TABLES;
-    if (user.role === 'admin') return TABLES;
+    if (!user) return tables;
+    if (user.role === 'admin') return tables;
     if (user.allowedTables) {
       const allowedNames = user.allowedTables.split(',').map(s => s.trim().toLowerCase());
-      return TABLES.filter(t => allowedNames.includes(t.name.trim().toLowerCase()));
+      return tables.filter(t => allowedNames.includes(t.name.trim().toLowerCase()));
     }
-    return TABLES;
-  }, [user]);
+    return tables;
+  }, [user, tables]);
 
   const allLoansList = useMemo(() => {
     return games
@@ -232,7 +233,7 @@ const DashboardPage: React.FC = () => {
                         const isBusy = busyTableNames.includes(t.name);
                         return (
                         <option key={t.id} value={t.id} disabled={isBusy}>
-                            {t.name} — {t.rate} MAD / Partie {isBusy ? '(OCCUPÉE)' : ''}
+                            {t.name} — {t.ratePerGame} MAD/Partie · {t.hourlyRate} MAD/Heure {isBusy ? '(OCCUPÉE)' : ''}
                         </option>
                         );
                     })}
@@ -270,7 +271,7 @@ const DashboardPage: React.FC = () => {
                             <div key={loan.id} className="flex items-center justify-between p-4 hover:bg-amber-50/50 transition-all">
                                 <div className="grid gap-0.5">
                                     <span className="font-black text-xs text-foreground uppercase tracking-tight">
-                                        {getDebtorName(loan)}
+                                        {getLoserName(loan)}
                                     </span>
                                     <div className="flex items-center gap-2 text-[9px] text-muted-foreground font-bold">
                                         <span>{loan.tableName}</span>

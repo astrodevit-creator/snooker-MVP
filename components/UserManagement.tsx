@@ -7,13 +7,14 @@ import { Button } from './ui/Button';
 import { Input } from './ui/Input';
 import { Select } from './ui/Select';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/Card';
-import { TABLES } from '../constants';
+import { useTables } from '../hooks/useTables';
 import UserRow from './UserRow';
 
 const UserManagement: React.FC = () => {
   const { user: currentUser } = useAuth();
   const { users, addUser, deleteUser } = useUsers();
-  
+  const { tables } = useTables();
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<Role>(Role.USER);
@@ -71,7 +72,7 @@ const UserManagement: React.FC = () => {
                   Tables Autorisées (Laisser vide pour TOUTES les tables)
                 </label>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-muted/40 p-3 rounded-2xl border">
-                  {TABLES.map(t => {
+                  {tables.map(t => {
                     const isSelected = selectedTables.includes(t.name);
                     return (
                       <button

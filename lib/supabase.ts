@@ -1,41 +1,46 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-// Load Supabase configuration. Prioritize local overrides from settings, then environment variables, then fallback to defaults.
+// Load Supabase configuration. Prioritize local overrides from settings, then environment variables.
+// IMPORTANT: There is intentionally no hardcoded fallback project/key here. Committing a working
+// Supabase URL + anon key into source control would leak access to a real database to anyone who
+// can read this repository. Configure VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY in .env.local,
+// or set them from the in-app Settings screen (stored in localStorage on this device only).
 export const getSupabaseConfig = () => {
-  let storedUrl = typeof window !== 'undefined' ? localStorage.getItem('supabase_url') : null;
-  let storedKey = typeof window !== 'undefined' ? localStorage.getItem('supabase_anon_key') : null;
+  const storedUrl = typeof window !== 'undefined' ? localStorage.getItem('supabase_url') : null;
+  const storedKey = typeof window !== 'undefined' ? localStorage.getItem('supabase_anon_key') : null;
 
-  // Stale credentials from the old project (known to be problematic) should be ignored and cleaned up
-  if (storedUrl && (storedUrl.includes('eyhlvfbmflbmhiactefk') || storedKey?.includes('eyhlvfbmflbmhiactefk'))) {
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('supabase_url');
-      localStorage.removeItem('supabase_anon_key');
-    }
-    storedUrl = null;
-    storedKey = null;
-  }
+  const envUrl = (import.meta.env && import.meta.env.VITE_SUPABASE_URL) || '';
+  const envKey = (import.meta.env && import.meta.env.VITE_SUPABASE_ANON_KEY) || '';
 
   return {
-    url: storedUrl || (import.meta.env && import.meta.env.VITE_SUPABASE_URL) || 'https://thyercrcplvcccowgwfz.supabase.co',
-    anonKey: storedKey || (import.meta.env && import.meta.env.VITE_SUPABASE_ANON_KEY) || 'sb_publishable_kKxbzrrbhoFPdjdINk1SiQ_sy8nwzSg',
-    isCustom: !!(storedUrl || storedKey)
+    url: storedUrl || envUrl,
+    anonKey: storedKey || envKey,
+    isCustom: !!(storedUrl || storedKey),
+    isConfigured: !!(storedUrl || envUrl) && !!(storedKey || envKey),
   };
 };
 
 const config = getSupabaseConfig();
 
-export const supabase = createClient(config.url, config.anonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-    storage: typeof window !== 'undefined' ? window.localStorage : undefined
-  },
-  global: {
-    headers: { 'x-application-name': 'snooker-club-manager' }
+// Fall back to harmless placeholder values so createClient doesn't throw before the user has had a
+// chance to configure their project from the Settings screen. Every request will simply fail until
+// real credentials are provided — see `config.isConfigured` / the SetupWarning banner in App.tsx.
+export const supabase = createClient(
+  config.url || 'https://placeholder.supabase.co',
+  config.anonKey || 'placeholder-anon-key',
+  {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+      storage: typeof window !== 'undefined' ? window.localStorage : undefined
+    },
+    global: {
+      headers: { 'x-application-name': 'snooker-club-manager' }
+    }
   }
-});
+);
 
 /**
  * Robustly converts any error object (especially Supabase/Postgrest errors) 
