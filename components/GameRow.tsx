@@ -151,11 +151,13 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
           player2: trimmedPlayer2,
           winner: editableGame.winner,
           loserName,
-          paymentStatus: editableGame.paymentStatus,
           modifiedBy: currentUserId,
           notes: editableGame.notes,
       };
 
+      // paymentStatus is only meaningful (and only shown/editable in the UI) once a game is
+      // Finished — leave it untouched while a session is still Running so editing unrelated
+      // fields (e.g. player names, party count) can never silently mark an active table as paid.
       if (game.status === GameStatus.RUNNING && editableGame.status === GameStatus.FINISHED) {
           const endTime = new Date().toISOString();
           const discount = isAdmin ? Number(editableGame.discountMAD) : game.discountMAD;
@@ -167,8 +169,10 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
           updates.priceMAD = price;
           updates.finalPriceMAD = Math.max(getMinPrice(editableGame.ratePerGame, editableGame.notes), Number(editableGame.finalPriceMAD));
           updates.discountMAD = discount;
+          updates.paymentStatus = editableGame.paymentStatus;
       } else if (game.status === GameStatus.FINISHED) {
         updates.finalPriceMAD = Number(editableGame.finalPriceMAD);
+        updates.paymentStatus = editableGame.paymentStatus;
         if (isAdmin) {
           updates.discountMAD = Number(editableGame.discountMAD);
         }
@@ -192,10 +196,9 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
 
     const isRunning = game.status === GameStatus.RUNNING;
     const elapsedMinutes = isRunning ? (liveDuration / 60) : 0;
-    const isLimitExceeded = isRunning && (
-        (isMini && elapsedMinutes > 25) ||
-        (isRoyal && elapsedMinutes > 45)
-    );
+    const gamesCount = parseInt(game.notes || '1', 10) || 1;
+    const thresholdMinutes = (isMini ? 25 : 45) * gamesCount;
+    const isLimitExceeded = isRunning && elapsedMinutes > thresholdMinutes;
 
     const getDebtorName = () => {
         if (game.paymentStatus !== PaymentStatus.LOAN) return null;
