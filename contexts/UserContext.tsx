@@ -3,11 +3,17 @@ import React, { createContext, useState, ReactNode, useCallback, useEffect } fro
 import { User, Role } from '../types';
 import { supabase, isMissingTableError, formatError } from '../lib/supabase';
 
+interface NewUserInput {
+  email: string;
+  password: string;
+  role: Role;
+  allowedTables?: string | null;
+}
+
 interface UserContextType {
   users: User[];
-  addUser: (user: Omit<User, 'id'>) => Promise<void>;
+  addUser: (user: NewUserInput) => Promise<void>;
   deleteUser: (userId: string) => Promise<void>;
-  findUserByEmail: (email: string) => User | undefined;
   isLoading: boolean;
   isTableMissing: boolean;
 }
@@ -16,10 +22,13 @@ export const UserContext = createContext<UserContextType | undefined>(undefined)
 
 const USERS_CACHE_KEY = 'snooker_users_cache';
 
-// Using valid UUID formats for default users to ensure compatibility with DB foreign keys
+// Safe columns only — the password hash is never selected by the client, it's only
+// ever compared server-side inside the verify_login/create_staff_user SQL functions.
+const SAFE_USER_COLUMNS = 'id, email, role, "allowedTables"';
+
 const DEFAULT_USERS: User[] = [
-  { id: '00000000-0000-0000-0000-000000000001', email: 'admin@snooker.club', password: 'admin', role: Role.ADMIN },
-  { id: '00000000-0000-0000-0000-000000000002', email: 'user@snooker.club', password: 'user', role: Role.USER }
+  { id: '00000000-0000-0000-0000-000000000001', email: 'admin@snooker.club', role: Role.ADMIN },
+  { id: '00000000-0000-0000-0000-000000000002', email: 'user@snooker.club', role: Role.USER }
 ];
 
 export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
@@ -28,7 +37,6 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (cached) {
       try {
         const parsed = JSON.parse(cached);
-        // Force migration if any user has a legacy non-UUID ID (less than 10 chars)
         const hasLegacyIds = parsed.some((u: any) => !u.id || u.id.length < 10);
         if (hasLegacyIds) {
           localStorage.removeItem(USERS_CACHE_KEY);
@@ -48,13 +56,13 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     try {
       const { data, error } = await supabase
         .from('users')
-        .select('*');
-      
+        .select(SAFE_USER_COLUMNS);
+
       if (error) throw error;
-      
+
       const userData = data || [];
       if (userData.length > 0) {
-        setUsers(userData);
+        setUsers(userData as User[]);
         localStorage.setItem(USERS_CACHE_KEY, JSON.stringify(userData));
       }
       setIsTableMissing(false);
@@ -73,24 +81,24 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     fetchUsers();
   }, [fetchUsers]);
 
-  const addUser = useCallback(async (newUser: Omit<User, 'id'>) => {
+  const addUser = useCallback(async (newUser: NewUserInput) => {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .insert([{ ...newUser }])
-        .select();
+      // Hashing happens server-side inside create_staff_user — the plaintext password
+      // is only ever sent over the connection for this one RPC call, never stored as-is.
+      const { error } = await supabase.rpc('create_staff_user', {
+        p_email: newUser.email,
+        p_password: newUser.password,
+        p_role: newUser.role,
+        p_allowed_tables: newUser.allowedTables ?? null,
+      });
 
       if (error) throw error;
-      if (data) {
-        const updatedUsers = [...users, data[0]];
-        setUsers(updatedUsers);
-        localStorage.setItem(USERS_CACHE_KEY, JSON.stringify(updatedUsers));
-      }
+      await fetchUsers();
     } catch (err: any) {
       alert(`Error adding user: ${formatError(err)}`);
     }
-  }, [users]);
-  
+  }, [fetchUsers]);
+
   const deleteUser = useCallback(async (userId: string) => {
     try {
       const { error } = await supabase
@@ -107,12 +115,8 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, [users]);
 
-  const findUserByEmail = useCallback((email: string) => {
-    return users.find(user => user.email.toLowerCase() === email.toLowerCase());
-  }, [users]);
-  
   return (
-    <UserContext.Provider value={{ users, addUser, deleteUser, findUserByEmail, isLoading, isTableMissing }}>
+    <UserContext.Provider value={{ users, addUser, deleteUser, isLoading, isTableMissing }}>
       {children}
     </UserContext.Provider>
   );

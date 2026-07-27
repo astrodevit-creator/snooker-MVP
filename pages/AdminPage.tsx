@@ -3,7 +3,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { Game, PaymentStatus, GameStatus, DailySummary } from '../types';
 import GamesTable from '../components/GamesTable';
 import KpiCard from '../components/KpiCard';
-import { formatCurrency } from '../lib/utils';
+import { formatCurrency, getLoserName } from '../lib/utils';
 import { Input } from '../components/ui/Input';
 import { DollarSignIcon, HashIcon, ClockIcon, AlertTriangle, TrophyIcon, UsersIcon, LoaderCircle, CheckCircle, CalendarIcon } from '../components/icons';
 import PrintResumeButton from '../components/PrintResumeButton';
@@ -11,6 +11,7 @@ import { useAuth } from '../hooks/useAuth';
 import { useGames } from '../hooks/useGames';
 import { useBusinessDay } from '../hooks/useBusinessDay';
 import UserManagement from '../components/UserManagement';
+import TableManagement from '../components/TableManagement';
 import AnalyticsCard from '../components/AnalyticsCard';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -91,13 +92,6 @@ const AdminPage: React.FC = () => {
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [games]);
 
-  const getDebtorName = (loan: Game) => {
-    if (!loan.player2) return loan.player1;
-    if (loan.winner === loan.player1) return loan.player2;
-    if (loan.winner === loan.player2) return loan.player1;
-    return loan.player1;
-  };
-
   const analyticsData = useMemo(() => {
     const playerStats: { [key: string]: { paid: number; loan: number; wins: number } } = {};
 
@@ -117,7 +111,7 @@ const AdminPage: React.FC = () => {
             addPlayerStat(player1, 'paid', amount);
             addPlayerStat(player2, 'paid', amount);
         } else if (paymentStatus === PaymentStatus.LOAN) {
-            const loanee = getDebtorName(game);
+            const loanee = getLoserName(game);
             addPlayerStat(loanee, 'loan', finalPriceMAD);
         }
         if (winner) {
@@ -327,7 +321,7 @@ const AdminPage: React.FC = () => {
                             <div key={loan.id} className="flex items-center justify-between p-4 hover:bg-amber-50/20 transition-all">
                                 <div className="grid gap-0.5">
                                     <span className="font-black text-xs text-foreground uppercase tracking-tight">
-                                        {getDebtorName(loan)}
+                                        {getLoserName(loan)}
                                     </span>
                                     <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
                                         <span className="font-bold text-amber-600/80">{loan.tableName}</span>
@@ -395,6 +389,11 @@ const AdminPage: React.FC = () => {
             deleteGame={deleteGame}
             currentUserId={user.id}
         />
+      </div>
+
+      <div className="pt-12 border-t">
+        <h2 className="text-xl font-black uppercase tracking-tighter mb-6">Gestion des Tables</h2>
+        <TableManagement />
       </div>
 
       <div className="pt-12 border-t">

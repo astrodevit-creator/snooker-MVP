@@ -5,8 +5,7 @@ import { Button } from './ui/Button';
 
 interface UserRowProps {
   user: User;
-  // Fix: currentUser from AuthContext does not include the password property
-  currentUser: Omit<User, 'password'> | null;
+  currentUser: User | null;
   onDelete: (userId: string) => void;
 }
 

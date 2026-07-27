@@ -14,29 +14,53 @@ interface SettingsModalProps {
 }
 
 const supabaseSql = `
--- SNOOKER CLUB MANAGER - SCHEMA REPAIR & INITIALIZATION
--- Run this in your Supabase SQL Editor to fix missing columns
+-- SNOOKER CLUB MANAGER - SCHEMA REPAIR & INITIALIZATION (v2)
+-- Run this in your Supabase SQL Editor. It is safe to re-run (idempotent).
+-- v2 adds: per-table hourly/per-game pricing, daily session numbering,
+-- an explicit loser field, and hashed passwords (replacing plaintext).
+
+-- 0. EXTENSIONS
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- 1. ENSURE BASE TABLES EXIST
 CREATE TABLE IF NOT EXISTS public.users (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   "email" text UNIQUE NOT NULL,
-  "password" text NOT NULL,
+  "password_hash" text,
   "role" text NOT NULL CHECK ("role" IN ('admin', 'user')),
   "allowedTables" text,
   "created_at" timestamptz DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS public.tables (
+  "id" text PRIMARY KEY,
+  "name" text NOT NULL,
+  "type" text NOT NULL CHECK ("type" IN ('mini', 'royal')),
+  "hourlyRate" numeric NOT NULL DEFAULT 0,
+  "ratePerGame" numeric NOT NULL DEFAULT 0,
+  "active" boolean NOT NULL DEFAULT true,
+  "sortOrder" int NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS public.day_counters (
+  "date" date PRIMARY KEY,
+  "counter" int NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS public.games (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   "date" date NOT NULL,
+  "dayNumber" int,
   "tableName" text NOT NULL,
+  "tableType" text,
   "hourlyRate" numeric NOT NULL,
+  "ratePerGame" numeric,
   "startTime" timestamptz NOT NULL,
   "endTime" timestamptz,
   "player1" text NOT NULL,
   "player2" text,
   "winner" text,
+  "loserName" text,
   "status" text NOT NULL,
   "durationSeconds" int,
   "priceMAD" numeric,
@@ -62,6 +86,11 @@ CREATE TABLE IF NOT EXISTS public.app_config (
 
 -- 2. ROBUST COLUMN REPAIR (FIXES PGRST204 ERRORS)
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS "allowedTables" text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS "password_hash" text;
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS "dayNumber" int;
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS "tableType" text;
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS "ratePerGame" numeric;
+ALTER TABLE public.games ADD COLUMN IF NOT EXISTS "loserName" text;
 ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS "totalPaid" numeric DEFAULT 0;
 ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS "totalLoan" numeric DEFAULT 0;
 ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS "totalDiscount" numeric DEFAULT 0;
@@ -69,7 +98,7 @@ ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS "gameCount" int DEFA
 ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS "archivedAt" timestamptz DEFAULT now();
 
 -- 3. ENSURE GAMES TABLE USES EXACT CASING
-DO $$ 
+DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='games' AND column_name='tablename') THEN
     ALTER TABLE public.games RENAME COLUMN "tablename" TO "tableName";
@@ -79,18 +108,118 @@ BEGIN
   END IF;
 END $$;
 
--- 4. PERMISSIONS & REALTIME
-ALTER TABLE public.users DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.games DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.daily_summaries DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.app_config DISABLE ROW LEVEL SECURITY;
+-- 4. DATA-SAFE MIGRATION: historically "hourlyRate" actually held the per-game
+-- price that was charged. Backfill ratePerGame from it so past totals stay correct;
+-- going forward hourlyRate becomes a purely informational per-hour snapshot.
+UPDATE public.games SET "ratePerGame" = "hourlyRate" WHERE "ratePerGame" IS NULL;
 
--- 5. INITIAL DATA
-INSERT INTO public.users ("id", "email", "password", "role") 
-VALUES 
-  ('00000000-0000-0000-0000-000000000001', 'admin@snooker.club', 'admin', 'admin'),
-  ('00000000-0000-0000-0000-000000000002', 'user@snooker.club', 'user', 'user')
-ON CONFLICT ("email") DO UPDATE SET "id" = EXCLUDED."id";
+-- 5. MIGRATE PASSWORDS TO BCRYPT HASHES (only runs if a legacy "password" column exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='password') THEN
+    EXECUTE 'UPDATE public.users SET password_hash = crypt(password, gen_salt(''bf'')) WHERE password_hash IS NULL';
+    EXECUTE 'ALTER TABLE public.users DROP COLUMN password';
+  END IF;
+END $$;
+
+-- 6. SEED DEFAULT TABLES (id stable so re-running this script is safe)
+INSERT INTO public.tables ("id", "name", "type", "hourlyRate", "ratePerGame", "active", "sortOrder")
+VALUES
+  ('royal-magnum', 'Royal Magnum', 'royal', 90, 40, true, 0),
+  ('royal-stroon', 'Royal Stroon', 'royal', 90, 40, true, 1),
+  ('mini-1', 'Mini 1', 'mini', 60, 20, true, 2),
+  ('mini-2', 'Mini 2', 'mini', 60, 20, true, 3)
+ON CONFLICT ("id") DO NOTHING;
+
+-- 7. DAILY SESSION NUMBERING (resets to 1 automatically whenever the date changes)
+CREATE OR REPLACE FUNCTION public.assign_day_session_number()
+RETURNS TRIGGER AS $$
+DECLARE
+  next_number int;
+BEGIN
+  INSERT INTO public.day_counters ("date", "counter")
+  VALUES (NEW."date", 1)
+  ON CONFLICT ("date") DO UPDATE SET "counter" = public.day_counters."counter" + 1
+  RETURNING "counter" INTO next_number;
+
+  NEW."dayNumber" := next_number;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_assign_day_session_number ON public.games;
+CREATE TRIGGER trg_assign_day_session_number
+  BEFORE INSERT ON public.games
+  FOR EACH ROW EXECUTE FUNCTION public.assign_day_session_number();
+
+-- 8. SECURE LOGIN & USER CREATION (SECURITY DEFINER: the client never reads password_hash directly)
+CREATE OR REPLACE FUNCTION public.verify_login(p_email text, p_password text)
+RETURNS TABLE ("id" uuid, "email" text, "role" text, "allowedTables" text)
+SECURITY DEFINER SET search_path = public AS $$
+  SELECT u."id", u."email", u."role", u."allowedTables"
+  FROM public.users u
+  WHERE lower(u."email") = lower(p_email)
+    AND u."password_hash" IS NOT NULL
+    AND u."password_hash" = crypt(p_password, u."password_hash");
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION public.create_staff_user(p_email text, p_password text, p_role text, p_allowed_tables text)
+RETURNS uuid
+SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+  new_id uuid;
+BEGIN
+  INSERT INTO public.users ("email", "password_hash", "role", "allowedTables")
+  VALUES (p_email, crypt(p_password, gen_salt('bf')), p_role, p_allowed_tables)
+  RETURNING "id" INTO new_id;
+  RETURN new_id;
+END;
+$$ LANGUAGE plpgsql;
+
+REVOKE ALL ON FUNCTION public.verify_login(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.verify_login(text, text) TO anon, authenticated;
+REVOKE ALL ON FUNCTION public.create_staff_user(text, text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.create_staff_user(text, text, text, text) TO anon, authenticated;
+
+-- 9. LOCK DOWN THE PASSWORD HASH COLUMN
+-- The anon/authenticated roles can read the normal user columns (needed for the staff list
+-- in Admin), but can NEVER select password_hash directly — only the SECURITY DEFINER
+-- functions above (which run as the table owner) can see it.
+REVOKE SELECT ON public.users FROM anon, authenticated;
+GRANT SELECT ("id", "email", "role", "allowedTables", "created_at") ON public.users TO anon, authenticated;
+GRANT INSERT, UPDATE, DELETE ON public.users TO anon, authenticated;
+
+-- 10. ROW LEVEL SECURITY
+-- This app is an internal, staff-only tool without per-user Supabase Auth sessions, so
+-- policies below stay permissive at the row level for the shared anon key. The meaningful
+-- fix in this script is #9 above (no more plaintext/hash leakage) plus removing the
+-- hardcoded project credentials that used to live in the app's source code.
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.games ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tables ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.day_counters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.daily_summaries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.app_config ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "allow_all_users" ON public.users;
+CREATE POLICY "allow_all_users" ON public.users FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "allow_all_games" ON public.games;
+CREATE POLICY "allow_all_games" ON public.games FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "allow_all_tables" ON public.tables;
+CREATE POLICY "allow_all_tables" ON public.tables FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "allow_all_day_counters" ON public.day_counters;
+CREATE POLICY "allow_all_day_counters" ON public.day_counters FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "allow_all_daily_summaries" ON public.daily_summaries;
+CREATE POLICY "allow_all_daily_summaries" ON public.daily_summaries FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "allow_all_app_config" ON public.app_config;
+CREATE POLICY "allow_all_app_config" ON public.app_config FOR ALL USING (true) WITH CHECK (true);
+
+-- 11. INITIAL DATA (default admin/user — CHANGE THESE PASSWORDS after first login!)
+INSERT INTO public.users ("id", "email", "password_hash", "role")
+VALUES
+  ('00000000-0000-0000-0000-000000000001', 'admin@snooker.club', crypt('admin', gen_salt('bf')), 'admin'),
+  ('00000000-0000-0000-0000-000000000002', 'user@snooker.club', crypt('user', gen_salt('bf')), 'user')
+ON CONFLICT ("email") DO NOTHING;
 
 INSERT INTO public.app_config ("key", "value")
 VALUES ('business_date', CURRENT_DATE::text)
@@ -105,6 +234,7 @@ COMMIT;
 -- DATA RESET SCRIPT (OPTIONAL - ONLY RUN THIS IF YOU WANT TO START NEW)
 -- -----------------------------------------------------------------------------
 -- DELETE FROM public.games;
+-- DELETE FROM public.day_counters;
 -- DELETE FROM public.daily_summaries;
 -- UPDATE public.app_config SET value = CURRENT_DATE::text WHERE key = 'business_date';
 `.trim();

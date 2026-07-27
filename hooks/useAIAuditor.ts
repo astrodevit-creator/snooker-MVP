@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useGames } from './useGames';
-import { Game, GameStatus } from '../types';
+import { Game, GameStatus, TableType } from '../types';
+import { getEffectiveTableType } from '../lib/utils';
 
 export interface AIAuditorAlert {
   id: string;
@@ -75,12 +76,10 @@ export const useAIAuditor = () => {
         const startTime = new Date(game.startTime).getTime();
         const elapsedMinutes = Math.max(0, (timeTick - startTime) / (1000 * 60));
         
-        const isMini = game.tableName.toLowerCase().includes('mini');
-        const isRoyal = game.tableName.toLowerCase().includes('royal') || 
-                        game.tableName.toLowerCase().includes('magnum') || 
-                        game.tableName.toLowerCase().includes('stroon');
-        
-        const thresholdMinutes = isMini ? 25 : (isRoyal ? 45 : 30); // Fallback to 30 mins for safety
+        const isMini = getEffectiveTableType(game) === TableType.MINI;
+        const isRoyal = !isMini;
+
+        const thresholdMinutes = isMini ? 25 : 45;
         const excessMinutes = Math.max(0, elapsedMinutes - thresholdMinutes);
         const tableType = isMini ? 'mini' : 'royal' as const;
 

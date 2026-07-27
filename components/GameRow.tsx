@@ -1,14 +1,14 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Game, GameStatus, PaymentStatus } from '../types';
-import { formatCurrency, formatDuration, calculateLivePrice, calculateFinalPrice, getMinPrice } from '../lib/utils';
+import { Game, GameStatus, PaymentStatus, TableType } from '../types';
+import { formatCurrency, formatDuration, calculateLivePrice, calculateFinalPrice, getMinPrice, getEffectiveRatePerGame, getEffectiveTableType, getLoserName } from '../lib/utils';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
-import { MoreVerticalIcon, ClockIcon, DollarSignIcon, AlertTriangle, CheckCircle, TrophyIcon, LockIcon } from './icons';
+import { MoreVerticalIcon, ClockIcon, DollarSignIcon, AlertTriangle, CheckCircle, TrophyIcon, LockIcon, HashIcon } from './icons';
 import { Input } from './ui/Input';
 import { Select } from './ui/Select';
-import { TABLES, DEFAULT_HOURLY_RATE } from '../constants';
 import { useAuth } from '../hooks/useAuth';
+import { useTables } from '../hooks/useTables';
 
 interface GameRowProps {
   game: Game;
@@ -20,17 +20,18 @@ interface GameRowProps {
 
 const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame, currentUserId }) => {
     const { user: currentUserDetails } = useAuth();
-    const gameRate = game.hourlyRate || DEFAULT_HOURLY_RATE;
+    const { tables } = useTables();
+    const gameRate = getEffectiveRatePerGame(game);
 
     const allowedTablesList = useMemo(() => {
-        if (!currentUserDetails) return TABLES;
-        if (currentUserDetails.role === 'admin') return TABLES;
+        if (!currentUserDetails) return tables;
+        if (currentUserDetails.role === 'admin') return tables;
         if (currentUserDetails.allowedTables) {
             const allowedNames = currentUserDetails.allowedTables.split(',').map(s => s.trim().toLowerCase());
-            return TABLES.filter(t => allowedNames.includes(t.name.trim().toLowerCase()));
+            return tables.filter(t => allowedNames.includes(t.name.trim().toLowerCase()));
         }
-        return TABLES;
-    }, [currentUserDetails]);
+        return tables;
+    }, [currentUserDetails, tables]);
 
     const calculateCurrentDuration = () => {
         if (game.status === GameStatus.RUNNING) {
@@ -42,19 +43,21 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
     };
 
     const [liveDuration, setLiveDuration] = useState<number>(calculateCurrentDuration);
-    
+
     const [livePrice, setLivePrice] = useState<number>(() => {
          if (game.status === GameStatus.RUNNING) {
-             return calculateLivePrice(game.startTime, gameRate, game.tableName);
+             return calculateLivePrice(gameRate, game.notes);
          }
          return 0;
     });
 
     const [isEditing, setIsEditing] = useState(false);
-    
+
     const [editableGame, setEditableGame] = useState({
       tableName: game.tableName ?? '',
-      hourlyRate: gameRate,
+      tableType: game.tableType ?? getEffectiveTableType(game),
+      hourlyRate: game.hourlyRate ?? 0,
+      ratePerGame: gameRate,
       player1: game.player1,
       player2: game.player2 ?? '',
       winner: game.winner ?? null,
@@ -64,24 +67,26 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
       finalPriceMAD: game.finalPriceMAD ?? 0,
       notes: game.notes ?? '1',
     });
-    
+
     useEffect(() => {
         if (game.status === GameStatus.RUNNING && !isEditing) {
             const updateStats = () => {
                 setLiveDuration(calculateCurrentDuration());
-                setLivePrice(calculateLivePrice(game.startTime, gameRate, game.tableName));
+                setLivePrice(calculateLivePrice(gameRate, game.notes));
             };
-            
+
             updateStats();
             const interval = setInterval(updateStats, 1000);
             return () => clearInterval(interval);
         }
-    }, [game.status, game.startTime, isEditing, gameRate, game.tableName]);
+    }, [game.status, game.startTime, isEditing, gameRate, game.notes]);
 
     const resetEditableGame = () => {
         setEditableGame({
             tableName: game.tableName ?? '',
-            hourlyRate: gameRate,
+            tableType: game.tableType ?? getEffectiveTableType(game),
+            hourlyRate: game.hourlyRate ?? 0,
+            ratePerGame: gameRate,
             player1: game.player1,
             player2: game.player2 ?? '',
             winner: game.winner ?? null,
@@ -99,25 +104,27 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
     };
 
     const handleTableChange = (tableId: string) => {
-        const config = TABLES.find(t => t.id === tableId);
+        const config = tables.find(t => t.id === tableId);
         if (config) {
              setEditableGame({
                  ...editableGame,
                  tableName: config.name,
-                 hourlyRate: config.rate
+                 tableType: config.type,
+                 hourlyRate: config.hourlyRate,
+                 ratePerGame: config.ratePerGame,
              });
         }
     };
-    
+
     const handleStatusChange = (newStatus: GameStatus) => {
         let newFinalPrice = editableGame.finalPriceMAD;
         if (game.status === GameStatus.RUNNING && newStatus === GameStatus.FINISHED) {
             const endTime = new Date().toISOString();
             const discount = isAdmin ? Number(editableGame.discountMAD) : game.discountMAD;
-            const { finalPrice } = calculateFinalPrice(game.startTime, endTime, discount, editableGame.hourlyRate, editableGame.tableName, editableGame.notes);
+            const { finalPrice } = calculateFinalPrice(game.startTime, endTime, discount, editableGame.ratePerGame, editableGame.notes);
             newFinalPrice = Number(finalPrice.toFixed(2));
         }
-        
+
         setEditableGame({
             ...editableGame,
             status: newStatus,
@@ -128,12 +135,22 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
     const handleSaveChanges = () => {
       if (!updateGame || !currentUserId) return;
 
+      const trimmedPlayer2 = editableGame.player2 || null;
+      const loserName = !trimmedPlayer2
+          ? editableGame.player1
+          : (editableGame.winner === editableGame.player1
+              ? trimmedPlayer2
+              : (editableGame.winner === trimmedPlayer2 ? editableGame.player1 : null));
+
       const updates: Partial<Game> = {
           tableName: editableGame.tableName,
+          tableType: editableGame.tableType,
           hourlyRate: editableGame.hourlyRate,
+          ratePerGame: editableGame.ratePerGame,
           player1: editableGame.player1,
-          player2: editableGame.player2 || null,
+          player2: trimmedPlayer2,
           winner: editableGame.winner,
+          loserName,
           paymentStatus: editableGame.paymentStatus,
           modifiedBy: currentUserId,
           notes: editableGame.notes,
@@ -142,13 +159,13 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
       if (game.status === GameStatus.RUNNING && editableGame.status === GameStatus.FINISHED) {
           const endTime = new Date().toISOString();
           const discount = isAdmin ? Number(editableGame.discountMAD) : game.discountMAD;
-          const { durationSeconds, price, finalPrice } = calculateFinalPrice(game.startTime, endTime, discount, editableGame.hourlyRate, editableGame.tableName, editableGame.notes);
-          
+          const { durationSeconds, price, finalPrice } = calculateFinalPrice(game.startTime, endTime, discount, editableGame.ratePerGame, editableGame.notes);
+
           updates.status = GameStatus.FINISHED;
           updates.endTime = endTime;
           updates.durationSeconds = durationSeconds;
           updates.priceMAD = price;
-          updates.finalPriceMAD = Math.max(getMinPrice(editableGame.tableName, editableGame.notes), Number(editableGame.finalPriceMAD));
+          updates.finalPriceMAD = Math.max(getMinPrice(editableGame.ratePerGame, editableGame.notes), Number(editableGame.finalPriceMAD));
           updates.discountMAD = discount;
       } else if (game.status === GameStatus.FINISHED) {
         updates.finalPriceMAD = Number(editableGame.finalPriceMAD);
@@ -156,7 +173,7 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
           updates.discountMAD = Number(editableGame.discountMAD);
         }
       }
-      
+
       updateGame(game.id, updates);
       setIsEditing(false);
     };
@@ -169,25 +186,20 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
     const priceToDisplay = game.status === GameStatus.RUNNING ? livePrice : (game.finalPriceMAD ?? 0);
     const durationToDisplay = game.status === GameStatus.RUNNING ? liveDuration : (game.durationSeconds ?? 0);
 
-    const isMini = game.tableName.toLowerCase().includes('mini');
-    const isRoyal = game.tableName.toLowerCase().includes('royal') || 
-                    game.tableName.toLowerCase().includes('magnum') || 
-                    game.tableName.toLowerCase().includes('stroon');
+    const effectiveTableType = getEffectiveTableType(game);
+    const isMini = effectiveTableType === TableType.MINI;
+    const isRoyal = effectiveTableType === TableType.ROYAL;
 
     const isRunning = game.status === GameStatus.RUNNING;
     const elapsedMinutes = isRunning ? (liveDuration / 60) : 0;
     const isLimitExceeded = isRunning && (
-        (isMini && elapsedMinutes > 25) || 
+        (isMini && elapsedMinutes > 25) ||
         (isRoyal && elapsedMinutes > 45)
     );
 
     const getDebtorName = () => {
         if (game.paymentStatus !== PaymentStatus.LOAN) return null;
-        if (!game.player2) return game.player1;
-        // Le perdant est celui qui n'est pas le gagnant
-        if (game.winner === game.player1) return game.player2;
-        if (game.winner === game.player2) return game.player1;
-        return game.player1;
+        return getLoserName(game);
     };
 
     const statusColors = {
@@ -205,7 +217,7 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
     const isLocked = !isAdmin && game.paymentStatus === PaymentStatus.PAID;
     const showActions = (isAdmin || (game.createdBy === currentUserId)) && !isLocked;
 
-    const currentTableConfig = TABLES.find(t => t.name === editableGame.tableName);
+    const currentTableConfig = tables.find(t => t.name === editableGame.tableName);
     const currentTableId = currentTableConfig ? currentTableConfig.id : '';
 
     if (isEditing) {
@@ -215,7 +227,14 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
                     <div className="p-6 md:p-8 space-y-8 animate-in slide-in-from-bottom-4">
                         <div className="flex justify-between items-center border-b pb-4">
                             <h4 className="text-xl font-black uppercase tracking-tighter">Modifier la partie</h4>
-                            <Badge variant="outline" className="text-[10px] font-black">{game.tableName}</Badge>
+                            <div className="flex items-center gap-2">
+                                {game.dayNumber != null && (
+                                    <Badge variant="secondary" className="text-[10px] font-black gap-1">
+                                        <HashIcon className="h-3 w-3" />{game.dayNumber}
+                                    </Badge>
+                                )}
+                                <Badge variant="outline" className="text-[10px] font-black">{game.tableName}</Badge>
+                            </div>
                         </div>
                         
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -341,10 +360,18 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
         <>
         {/* Desktop View Row */}
         <tr className={`border-b transition-colors hover:bg-muted/50 hidden md:table-row ${isLimitExceeded ? 'bg-red-500/5 hover:bg-red-500/10' : ''}`}>
-            <td className="p-4 align-middle font-bold text-muted-foreground/60">{game.tableName}</td>
+            <td className="p-4 align-middle font-bold text-muted-foreground/60">
+                <div className="flex items-center gap-2">
+                    {game.dayNumber != null && (
+                        <span className="text-[9px] font-black text-muted-foreground/50">#{game.dayNumber}</span>
+                    )}
+                    <span>{game.tableName}</span>
+                </div>
+            </td>
             <td className="p-4 align-middle">
                 <div className="font-black text-base uppercase">{game.player1}{game.player2 ? ` vs ${game.player2}` : ''}</div>
                 {game.winner && <div className="text-[10px] font-black text-green-600 uppercase">Gagnant: {game.winner}</div>}
+                {getDebtorName() && <div className="text-[10px] font-black text-amber-600 uppercase">Perdant/Doit: {getDebtorName()}</div>}
             </td>
             <td className="p-4 align-middle">
                 <Badge variant="outline" className="font-black text-[11px] px-2.5 py-0.5 border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/30 text-zinc-700 dark:text-zinc-300">
@@ -411,9 +438,16 @@ const GameRow: React.FC<GameRowProps> = ({ game, isAdmin, updateGame, deleteGame
                     <div className="p-6 space-y-5 relative z-10">
                         <div className="flex justify-between items-start">
                             <div className="space-y-1.5">
-                                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${isLimitExceeded ? 'bg-red-600 text-white' : 'bg-zinc-900 dark:bg-zinc-100 text-zinc-100 dark:text-zinc-900'}`}>
-                                    {game.tableName}
-                                </span>
+                                <div className="flex items-center gap-1.5">
+                                    <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${isLimitExceeded ? 'bg-red-600 text-white' : 'bg-zinc-900 dark:bg-zinc-100 text-zinc-100 dark:text-zinc-900'}`}>
+                                        {game.tableName}
+                                    </span>
+                                    {game.dayNumber != null && (
+                                        <span className="px-2 py-1 rounded-full text-[10px] font-black text-muted-foreground bg-muted">
+                                            #{game.dayNumber}
+                                        </span>
+                                    )}
+                                </div>
                                 <div className="flex items-center gap-2 text-muted-foreground">
                                     <ClockIcon className="h-3.5 w-3.5" />
                                     <span className="text-[11px] font-black uppercase">
