@@ -79,15 +79,16 @@ export const useAIAuditor = () => {
         const isMini = getEffectiveTableType(game) === TableType.MINI;
         const isRoyal = !isMini;
 
-        const thresholdMinutes = isMini ? 25 : 45;
+        const gamesCount = parseInt(game.notes || '1', 10) || 1;
+        const thresholdMinutes = (isMini ? 25 : 45) * gamesCount;
         const excessMinutes = Math.max(0, elapsedMinutes - thresholdMinutes);
         const tableType = isMini ? 'mini' : 'royal' as const;
 
         let recommendation = '';
         if (isMini) {
-          recommendation = `La table Mini a dépassé le seuil de 25 minutes de jeu. Recommandation : Veuillez vérifier s'ils finissent leur cadre ou s'ils souhaitent prolonger.`;
+          recommendation = `La table Mini a dépassé le seuil de ${thresholdMinutes} minutes de jeu (${gamesCount} partie(s)). Recommandation : Veuillez vérifier s'ils finissent leur cadre ou s'ils souhaitent prolonger.`;
         } else {
-          recommendation = `La table Royal a dépassé le seuil de 45 minutes de jeu. Recommandation : Veuillez approcher les joueurs pour faire le point de fin de partie.`;
+          recommendation = `La table Royal a dépassé le seuil de ${thresholdMinutes} minutes de jeu (${gamesCount} partie(s)). Recommandation : Veuillez approcher les joueurs pour faire le point de fin de partie.`;
         }
 
         return {

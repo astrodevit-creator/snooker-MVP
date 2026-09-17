@@ -149,7 +149,7 @@ const Header: React.FC = () => {
                           <CheckCircle className="h-8 w-8 text-green-500 opacity-60" />
                           <div>
                             <p className="text-xs font-black uppercase tracking-widest text-foreground">Aucun dépassement</p>
-                            <p className="text-[10px] mt-0.5 max-w-[250px] mx-auto">Toutes les tables respectent les limites d'audit (Mini &lt; 25m, Royal &lt; 45m).</p>
+                            <p className="text-[10px] mt-0.5 max-w-[250px] mx-auto">Toutes les tables respectent les limites d'audit (Mini 25m/partie, Royal 45m/partie).</p>
                           </div>
                         </div>
                       )}

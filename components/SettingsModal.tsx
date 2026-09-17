@@ -19,8 +19,8 @@ const supabaseSql = `
 -- v2 adds: per-table hourly/per-game pricing, daily session numbering,
 -- an explicit loser field, and hashed passwords (replacing plaintext).
 
--- 0. EXTENSIONS
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- 0. EXTENSIONS (Supabase keeps pgcrypto's functions in the "extensions" schema)
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
 
 -- 1. ENSURE BASE TABLES EXIST
 CREATE TABLE IF NOT EXISTS public.users (
@@ -117,7 +117,7 @@ UPDATE public.games SET "ratePerGame" = "hourlyRate" WHERE "ratePerGame" IS NULL
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='password') THEN
-    EXECUTE 'UPDATE public.users SET password_hash = crypt(password, gen_salt(''bf'')) WHERE password_hash IS NULL';
+    EXECUTE 'UPDATE public.users SET password_hash = extensions.crypt(password, extensions.gen_salt(''bf'')) WHERE password_hash IS NULL';
     EXECUTE 'ALTER TABLE public.users DROP COLUMN password';
   END IF;
 END $$;
@@ -133,7 +133,8 @@ ON CONFLICT ("id") DO NOTHING;
 
 -- 7. DAILY SESSION NUMBERING (resets to 1 automatically whenever the date changes)
 CREATE OR REPLACE FUNCTION public.assign_day_session_number()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER
+SET search_path = public AS $$
 DECLARE
   next_number int;
 BEGIN
@@ -155,7 +156,7 @@ CREATE TRIGGER trg_assign_day_session_number
 -- 8. SECURE LOGIN & USER CREATION (SECURITY DEFINER: the client never reads password_hash directly)
 CREATE OR REPLACE FUNCTION public.verify_login(p_email text, p_password text)
 RETURNS TABLE ("id" uuid, "email" text, "role" text, "allowedTables" text)
-SECURITY DEFINER SET search_path = public AS $$
+SECURITY DEFINER SET search_path = public, extensions AS $$
   SELECT u."id", u."email", u."role", u."allowedTables"
   FROM public.users u
   WHERE lower(u."email") = lower(p_email)
@@ -165,7 +166,7 @@ $$ LANGUAGE sql STABLE;
 
 CREATE OR REPLACE FUNCTION public.create_staff_user(p_email text, p_password text, p_role text, p_allowed_tables text)
 RETURNS uuid
-SECURITY DEFINER SET search_path = public AS $$
+SECURITY DEFINER SET search_path = public, extensions AS $$
 DECLARE
   new_id uuid;
 BEGIN
@@ -217,18 +218,31 @@ CREATE POLICY "allow_all_app_config" ON public.app_config FOR ALL USING (true) W
 -- 11. INITIAL DATA (default admin/user — CHANGE THESE PASSWORDS after first login!)
 INSERT INTO public.users ("id", "email", "password_hash", "role")
 VALUES
-  ('00000000-0000-0000-0000-000000000001', 'admin@snooker.club', crypt('admin', gen_salt('bf')), 'admin'),
-  ('00000000-0000-0000-0000-000000000002', 'user@snooker.club', crypt('user', gen_salt('bf')), 'user')
+  ('00000000-0000-0000-0000-000000000001', 'admin@snooker.club', extensions.crypt('admin', extensions.gen_salt('bf')), 'admin'),
+  ('00000000-0000-0000-0000-000000000002', 'user@snooker.club', extensions.crypt('user', extensions.gen_salt('bf')), 'user')
 ON CONFLICT ("email") DO NOTHING;
 
 INSERT INTO public.app_config ("key", "value")
 VALUES ('business_date', CURRENT_DATE::text)
 ON CONFLICT ("key") DO NOTHING;
 
-BEGIN;
-  DROP PUBLICATION IF EXISTS supabase_realtime;
-  CREATE PUBLICATION supabase_realtime FOR ALL TABLES;
-COMMIT;
+-- Supabase already manages the "supabase_realtime" publication; creating it FOR ALL
+-- TABLES requires superuser, which migrations don't have. Add our tables to the
+-- existing publication instead (skipping any already added, so this stays idempotent).
+DO $$
+DECLARE
+  t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['users', 'games', 'tables', 'day_counters', 'daily_summaries', 'app_config']
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = t
+    ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', t);
+    END IF;
+  END LOOP;
+END $$;
 
 -- -----------------------------------------------------------------------------
 -- DATA RESET SCRIPT (OPTIONAL - ONLY RUN THIS IF YOU WANT TO START NEW)
